@@ -66,6 +66,7 @@ class Config:
     crawl_limit: int | None
     run_mode: str
     fake_drive_root: Path | None
+    summary_file: Path
 
 
 class DriveClient:
@@ -431,6 +432,7 @@ def build_config(args: argparse.Namespace) -> Config:
     temp_folder = Path(args.temp_folder or os.getenv("TEMP_FOLDER", "./tmp/downloads"))
     credentials_json = Path(args.credentials_json or os.getenv("GOOGLE_CREDENTIALS_JSON", "./credentials.json"))
     state_file = Path(args.state_file or os.getenv("STATE_FILE", "./zoepham_imported_state.json"))
+    summary_file = Path(os.getenv("SUMMARY_FILE", "./zoepham_import_summary.json"))
     email_raw = args.email_to or os.getenv("EMAIL_TO", "")
     email_to = [x.strip() for x in email_raw.split(",") if x.strip()]
 
@@ -457,6 +459,7 @@ def build_config(args: argparse.Namespace) -> Config:
         ),
         run_mode=os.getenv("RUN_MODE", "live").strip().lower(),
         fake_drive_root=Path(os.getenv("FAKE_DRIVE_ROOT")).resolve() if os.getenv("FAKE_DRIVE_ROOT") else None,
+        summary_file=summary_file,
     )
 
 
@@ -577,8 +580,10 @@ def run_import(cfg: Config) -> int:
 
     if cfg.dry_run:
         logging.info("DRY RUN: state file not updated")
-    else:
+    elif imported_items:
         save_state(cfg.state_file, processed)
+    else:
+        logging.info("No state changes to persist")
 
     now_text = dt.datetime.now().strftime("%d %b %Y %H:%M")
     subject = f"NEW PHOTOS IMPORTED - {dt.datetime.now().strftime('%d %b %Y')}"
@@ -590,7 +595,10 @@ def run_import(cfg: Config) -> int:
         dry_run=cfg.dry_run,
     )
 
-    if cfg.email_to:
+    if not imported_items:
+        logging.info("No new event folders found today.")
+
+    if imported_items and cfg.email_to:
         if cfg.dry_run:
             logging.info("DRY RUN: would send email to %s", ", ".join(cfg.email_to))
         elif cfg.resend_api_key:
@@ -610,6 +618,15 @@ def run_import(cfg: Config) -> int:
         total_added,
         len(failures),
     )
+    summary = {
+        "imported_events": len(imported_items),
+        "total_photos": total_added,
+        "failures": len(failures),
+        "dry_run": cfg.dry_run,
+        "timestamp": dt.datetime.now().isoformat(timespec="seconds"),
+    }
+    cfg.summary_file.parent.mkdir(parents=True, exist_ok=True)
+    cfg.summary_file.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     return 0
 
 

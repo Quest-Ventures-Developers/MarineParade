@@ -3,7 +3,7 @@ name: Import Zoepham Photos
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 17 * * *"
 
 permissions:
   contents: write
@@ -58,9 +58,30 @@ jobs:
           printf '%s' "${GOOGLE_SERVICE_ACCOUNT_JSON}" > credentials.json
 
       - name: Run importer
+        id: importer
         run: python scripts/import_zoepham_photos.py
 
+      - name: Read import summary
+        id: summary
+        run: |
+          if [ ! -f zoepham_import_summary.json ]; then
+            echo "Missing zoepham_import_summary.json" >&2
+            exit 1
+          fi
+          imported_events="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path("zoepham_import_summary.json").read_text())
+          print(int(data.get("imported_events", 0)))
+          PY
+          )"
+          echo "imported_events=${imported_events}" >> "$GITHUB_OUTPUT"
+          if [ "${imported_events}" -eq 0 ]; then
+            echo "No new event folders found today."
+          fi
+
       - name: Setup SSH key
+        if: steps.summary.outputs.imported_events != '0'
         env:
           SSH_PRIVATE_KEY: ${{ secrets.WP_SSH_PRIVATE_KEY }}
           SSH_KNOWN_HOSTS: ${{ secrets.WP_SSH_KNOWN_HOSTS }}
@@ -77,6 +98,7 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
 
       - name: Rsync photos to WordPress
+        if: steps.summary.outputs.imported_events != '0'
         env:
           WP_SSH_USER: ${{ secrets.WP_SSH_USER }}
           WP_SSH_HOST: ${{ secrets.WP_SSH_HOST }}
@@ -98,6 +120,7 @@ jobs:
             ./export/zoepham/ "${WP_SSH_USER}@${WP_SSH_HOST}:${WP_TARGET_DIR}/"
 
       - name: Commit updated state file
+        if: steps.summary.outputs.imported_events != '0'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
