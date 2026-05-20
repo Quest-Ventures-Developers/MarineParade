@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Runtime artifacts
+credentials.json
+zoepham.log
+tmp/
+export/
+
+# State (tracked in repo by workflow once created)
+# zoepham_imported_state.json
+
+# Local env
+.env

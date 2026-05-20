@@ -1,0 +1,14 @@
+{
+  "f2": {
+    "name": "Event One",
+    "slug": "event-one",
+    "imported_at": "2026-05-20 07:57:50",
+    "photos": 2
+  },
+  "f6": {
+    "name": "Nested Event",
+    "slug": "nested-event",
+    "imported_at": "2026-05-20 07:57:50",
+    "photos": 1
+  }
+}
