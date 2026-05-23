@@ -1,0 +1,177 @@
+name: Google Drive Sync to ICDSoft + NextGEN Import
+
+on:
+  workflow_dispatch:
+  schedule:
+      - cron: '0 2 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: google-drive-sync-zoepham
+  cancel-in-progress: false
+
+jobs:
+  sync-and-import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUNBUFFERED: '1'
+      FROM_FOLDER: '01 Events'
+      TO_FOLDER: './export/zoepham'
+      TEMP_FOLDER: './tmp/downloads'
+      STATE_FILE: './zoepham_imported_state.json'
+      RESIZE_PERCENT: '70'
+      TIMEZONE: 'Asia/Ho_Chi_Minh'
+      LOG_LEVEL: 'INFO'
+      GOOGLE_CREDENTIALS_JSON: './credentials.json'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'requirements.txt'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Write Google credentials
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "${GOOGLE_SERVICE_ACCOUNT_JSON}" ]; then
+            echo "Missing GOOGLE_SERVICE_ACCOUNT_JSON secret" >&2
+            exit 1
+          fi
+          umask 077
+          printf '%s' "${GOOGLE_SERVICE_ACCOUNT_JSON}" > credentials.json
+
+      - name: Run Google Drive importer (new images only)
+        run: python scripts/import_zoepham_photos.py
+
+      - name: Read import summary
+        id: summary
+        run: |
+          if [ ! -f zoepham_import_summary.json ]; then
+            echo "Missing zoepham_import_summary.json" >&2
+            exit 1
+          fi
+          imported_events="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('zoepham_import_summary.json').read_text())
+          print(int(data.get('imported_events', 0)))
+          PY
+          )"
+          imported_photos="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('zoepham_import_summary.json').read_text())
+          print(int(data.get('imported_photos', 0)))
+          PY
+          )"
+          echo "imported_events=${imported_events}" >> "$GITHUB_OUTPUT"
+          echo "imported_photos=${imported_photos}" >> "$GITHUB_OUTPUT"
+          echo "Imported events: ${imported_events}"
+          echo "Imported photos: ${imported_photos}"
+
+      - name: Setup SSH key
+        if: steps.summary.outputs.imported_photos != '0'
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.WP_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.WP_SSH_KNOWN_HOSTS }}
+        run: |
+          if [ -z "${SSH_PRIVATE_KEY}" ] || [ -z "${SSH_KNOWN_HOSTS}" ]; then
+            echo "Missing WP_SSH_PRIVATE_KEY or WP_SSH_KNOWN_HOSTS secret" >&2
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Validate required remote settings
+        if: steps.summary.outputs.imported_photos != '0'
+        env:
+          WP_SSH_USER: ${{ secrets.WP_SSH_USER }}
+          WP_SSH_HOST: ${{ secrets.WP_SSH_HOST }}
+          WP_TARGET_DIR: ${{ secrets.WP_TARGET_DIR }}
+          WP_LOAD_PATH: ${{ secrets.WP_LOAD_PATH }}
+        run: |
+          if [ -z "${WP_SSH_USER}" ] || [ -z "${WP_SSH_HOST}" ] || [ -z "${WP_TARGET_DIR}" ] || [ -z "${WP_LOAD_PATH}" ]; then
+            echo "Missing one of: WP_SSH_USER, WP_SSH_HOST, WP_TARGET_DIR, WP_LOAD_PATH" >&2
+            exit 1
+          fi
+          case "${WP_TARGET_DIR}" in
+            /home/*/www/*/wp-content/*) ;;
+            *) echo "Unsafe WP_TARGET_DIR path" >&2; exit 1 ;;
+          esac
+          case "${WP_LOAD_PATH}" in
+            /home/*/www/*/wp-load.php) ;;
+            *) echo "Unsafe WP_LOAD_PATH" >&2; exit 1 ;;
+          esac
+
+      - name: Sync new files to ICDSoft (no delete)
+        if: steps.summary.outputs.imported_photos != '0'
+        env:
+          WP_SSH_USER: ${{ secrets.WP_SSH_USER }}
+          WP_SSH_HOST: ${{ secrets.WP_SSH_HOST }}
+          WP_TARGET_DIR: ${{ secrets.WP_TARGET_DIR }}
+        run: |
+          rsync -avz \
+            -e "ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" \
+            ./export/zoepham/ "${WP_SSH_USER}@${WP_SSH_HOST}:${WP_TARGET_DIR}/"
+
+      - name: Upload NextGEN import script to server
+        if: steps.summary.outputs.imported_photos != '0'
+        env:
+          WP_SSH_USER: ${{ secrets.WP_SSH_USER }}
+          WP_SSH_HOST: ${{ secrets.WP_SSH_HOST }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "${WP_SSH_USER}@${WP_SSH_HOST}" "mkdir -p ~/marineparade-sync"
+          rsync -avz \
+            -e "ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" \
+            ./scripts/wp_ngg_idempotent_import.php "${WP_SSH_USER}@${WP_SSH_HOST}:~/marineparade-sync/wp_ngg_idempotent_import.php"
+
+      - name: Run remote NextGEN idempotent import
+        if: steps.summary.outputs.imported_photos != '0'
+        env:
+          WP_SSH_USER: ${{ secrets.WP_SSH_USER }}
+          WP_SSH_HOST: ${{ secrets.WP_SSH_HOST }}
+          WP_TARGET_DIR: ${{ secrets.WP_TARGET_DIR }}
+          WP_LOAD_PATH: ${{ secrets.WP_LOAD_PATH }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "${WP_SSH_USER}@${WP_SSH_HOST}" \
+            "php ~/marineparade-sync/wp_ngg_idempotent_import.php --wp-load='${WP_LOAD_PATH}' --base-dir='${WP_TARGET_DIR}'"
+
+      - name: Commit updated state file
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -f zoepham_imported_state.json ]; then
+            git add zoepham_imported_state.json
+          fi
+          if [ -f zoepham_import_summary.json ]; then
+            git add zoepham_import_summary.json
+          fi
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update zoepham sync state"
+            git push
+          else
+            echo "No state changes to commit"
+          fi
+
+      - name: Cleanup credentials
+        if: always()
+        run: rm -f credentials.json
