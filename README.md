@@ -112,3 +112,32 @@ Set these in repository Settings -> Secrets and variables -> Actions:
 - Workflow validates remote target prefix before rsync.
 - SSH host key pinning is required (`StrictHostKeyChecking=yes`).
 - `credentials.json` is deleted at workflow end.
+
+## WordPress / NextGEN Idempotent Import (ICDSoft)
+
+Use `scripts/wp_ngg_idempotent_import.php` when you need to register server folders/images into NextGEN safely and repeatedly.
+
+Behavior:
+- Checks `wp_ngg_gallery` and skips creating duplicate galleries by folder path/name.
+- Checks `wp_ngg_pictures` and skips duplicate image filenames within each gallery.
+- Tracks processed folder paths in both WordPress option storage and JSON (`/wp-content/uploads/zoepham_ngg_processed_folders.json` by default).
+- Logs `SKIPPED: folder already imported` for previously processed folders.
+- Still imports only newly added image files for existing galleries.
+- Never deletes or overwrites existing galleries/images.
+- Enforces folder path under `/wp-content/`.
+
+Run all folders under `wp-content/zoepham`:
+
+```bash
+php scripts/wp_ngg_idempotent_import.php \
+  --wp-load=/home/marineparade/www/www/wp-load.php \
+  --base-dir=/home/marineparade/www/www/wp-content/zoepham
+```
+
+Run one folder:
+
+```bash
+php scripts/wp_ngg_idempotent_import.php \
+  --wp-load=/home/marineparade/www/www/wp-load.php \
+  --folder=/home/marineparade/www/www/wp-content/zoepham/20260425-splash-splash
+```

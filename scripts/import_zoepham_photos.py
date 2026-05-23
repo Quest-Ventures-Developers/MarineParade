@@ -385,7 +385,7 @@ def build_report_html(
         lines.append("</ol>")
         lines.append(f"<p><b>TOTAL:</b> {total} photos from {len(imported)} event(s)</p>")
     else:
-        lines.append("<p>No new event folders found.</p>")
+        lines.append("<p>No new photos found.</p>")
 
     if failures:
         lines.append("<h3>Failure Summary</h3><ul>")
@@ -499,10 +499,6 @@ def run_import(cfg: Config) -> int:
     total_added = 0
 
     for folder_id, event_name in event_folders.items():
-        if folder_id in processed:
-            logging.info("Skipping already processed event: %s", event_name)
-            continue
-
         slug = sanitize_name(event_name, "event")
         try:
             dest_dir = safe_join(cfg.to_folder, slug)
@@ -572,11 +568,12 @@ def run_import(cfg: Config) -> int:
             "imported_at": now,
             "photos": added,
         }
-        if not cfg.dry_run:
-            processed[folder_id] = event_record
-        imported_items.append(event_record)
-        total_added += added
-        logging.info("DONE -> %s photos", added)
+        if added > 0:
+            if not cfg.dry_run:
+                processed[folder_id] = event_record
+            imported_items.append(event_record)
+            total_added += added
+        logging.info("DONE -> %s new photos", added)
 
     if cfg.dry_run:
         logging.info("DRY RUN: state file not updated")
@@ -596,7 +593,7 @@ def run_import(cfg: Config) -> int:
     )
 
     if not imported_items:
-        logging.info("No new event folders found today.")
+        logging.info("No new photos found today.")
 
     if imported_items and cfg.email_to:
         if cfg.dry_run:
