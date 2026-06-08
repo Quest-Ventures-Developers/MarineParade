@@ -56,6 +56,7 @@ Environment variables:
 - `RESEND_API_KEY` Resend API key
 - `LOG_LEVEL` default `INFO`
 - `CRAWL_LIMIT` optional crawl limiter for diagnostics
+- `EVENT_START_DATE` default `2026-05-09`; only event folders dated on/after this date are imported
 - `RUN_MODE` `live` or `fake`
 - `FAKE_DRIVE_ROOT` required if `RUN_MODE=fake`
 

@@ -25,6 +25,7 @@ jobs:
       RESIZE_PERCENT: "70"
       TIMEZONE: "Asia/Ho_Chi_Minh"
       LOG_LEVEL: "INFO"
+      EVENT_START_DATE: "2026-05-09"
       EMAIL_TO: "photos@marineparade.sg,zoe.pham@questventures.com,godricang@gmail.com,administrators@marineparade.com"
       RESEND_FROM: "NextGen Gallery Bot <no-reply@marineparade.sg>"
       GOOGLE_CREDENTIALS_JSON: "./credentials.json"

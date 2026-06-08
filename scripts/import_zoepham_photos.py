@@ -46,6 +46,7 @@ except Exception:  # pragma: no cover - handled by import-check test
 IMAGE_MIME_PREFIX = "image/"
 FOLDER_MIME = "application/vnd.google-apps.folder"
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+DEFAULT_EVENT_START_DATE = "2026-05-09"
 
 
 @dataclasses.dataclass
@@ -64,6 +65,7 @@ class Config:
     resend_from: str
     log_level: str
     crawl_limit: int | None
+    event_start_date: dt.date | None
     run_mode: str
     fake_drive_root: Path | None
     summary_file: Path
@@ -253,6 +255,87 @@ def sanitize_name(name: str, fallback: str = "event") -> str:
     return slug or fallback
 
 
+def parse_event_start_date(value: str | None) -> dt.date | None:
+    if value is None or not value.strip():
+        return None
+
+    raw = value.strip()
+    formats = ("%Y-%m-%d", "%Y%m%d", "%d %b %Y", "%d %B %Y")
+    for fmt in formats:
+        try:
+            return dt.datetime.strptime(raw, fmt).date()
+        except ValueError:
+            pass
+
+    compact = re.fullmatch(r"(\d{2})(\d{2})(\d{2})", raw)
+    if compact:
+        day, month, year = compact.groups()
+        return dt.date(2000 + int(year), int(month), int(day))
+
+    raise ValueError(
+        "EVENT_START_DATE must use YYYY-MM-DD, YYYYMMDD, DDMMYY, or '09 May 2026' format"
+    )
+
+
+def event_date_from_name(name: str) -> dt.date | None:
+    candidates = [
+        (r"(?<!\d)(20\d{2})[-_ ]?(\d{2})[-_ ]?(\d{2})(?!\d)", "ymd"),
+        (r"(?<!\d)(\d{2})[-_ ]?(\d{2})[-_ ]?(\d{2})(?!\d)", "dmy2"),
+        (r"(?<!\w)(\d{1,2})[-_ ]+([A-Za-z]{3,9})[-_ ]+(20\d{2})(?!\w)", "dmy_text"),
+    ]
+    for pattern, kind in candidates:
+        match = re.search(pattern, name)
+        if not match:
+            continue
+        try:
+            if kind == "ymd":
+                year, month, day = match.groups()
+                return dt.date(int(year), int(month), int(day))
+            if kind == "dmy2":
+                day, month, year = match.groups()
+                return dt.date(2000 + int(year), int(month), int(day))
+            day, month_text, year = match.groups()
+            for fmt in ("%d %b %Y", "%d %B %Y"):
+                try:
+                    return dt.datetime.strptime(f"{day} {month_text} {year}", fmt).date()
+                except ValueError:
+                    pass
+        except ValueError:
+            continue
+    return None
+
+
+def filter_event_folders_by_start_date(
+    event_folders: dict[str, str], start_date: dt.date | None
+) -> dict[str, str]:
+    if start_date is None:
+        return event_folders
+
+    filtered: dict[str, str] = {}
+    skipped_before = 0
+    skipped_undated = 0
+    for folder_id, event_name in event_folders.items():
+        event_date = event_date_from_name(event_name)
+        if event_date is None:
+            skipped_undated += 1
+            logging.info("Skipping undated event folder: %s", event_name)
+            continue
+        if event_date < start_date:
+            skipped_before += 1
+            logging.info("Skipping event before %s: %s", start_date.isoformat(), event_name)
+            continue
+        filtered[folder_id] = event_name
+
+    logging.info(
+        "Date filter start=%s kept=%d skipped_before=%d skipped_undated=%d",
+        start_date.isoformat(),
+        len(filtered),
+        skipped_before,
+        skipped_undated,
+    )
+    return filtered
+
+
 def safe_join(base: Path, *parts: str) -> Path:
     candidate = base.joinpath(*parts).resolve()
     base_resolved = base.resolve()
@@ -335,7 +418,12 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
     path.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def find_leaf_event_folders(drive: DriveClient, root_id: str, crawl_limit: int | None = None) -> dict[str, str]:
+def find_leaf_event_folders(
+    drive: DriveClient,
+    root_id: str,
+    crawl_limit: int | None = None,
+    start_date: dt.date | None = None,
+) -> dict[str, str]:
     event_folders: dict[str, str] = {}
     visited = 0
 
@@ -353,6 +441,10 @@ def find_leaf_event_folders(drive: DriveClient, root_id: str, crawl_limit: int |
             event_folders[folder_id] = drive.get_folder_name(folder_id)
 
         for sub in subfolders:
+            sub_date = event_date_from_name(str(sub.get("name", ""))) if start_date else None
+            if start_date and sub_date and sub_date < start_date:
+                logging.info("Skipping crawl before %s: %s", start_date.isoformat(), sub.get("name", ""))
+                continue
             _walk(sub["id"])
 
     _walk(root_id)
@@ -457,6 +549,9 @@ def build_config(args: argparse.Namespace) -> Config:
         crawl_limit=(
             int(os.getenv("CRAWL_LIMIT", "0")) if os.getenv("CRAWL_LIMIT") and os.getenv("CRAWL_LIMIT") != "0" else None
         ),
+        event_start_date=parse_event_start_date(
+            args.event_start_date or os.getenv("EVENT_START_DATE", DEFAULT_EVENT_START_DATE)
+        ),
         run_mode=os.getenv("RUN_MODE", "live").strip().lower(),
         fake_drive_root=Path(os.getenv("FAKE_DRIVE_ROOT")).resolve() if os.getenv("FAKE_DRIVE_ROOT") else None,
         summary_file=summary_file,
@@ -492,8 +587,10 @@ def run_import(cfg: Config) -> int:
     root_id = drive.find_folder_id(cfg.from_folder)
     logging.info("Root folder found: %s", root_id)
 
-    event_folders = find_leaf_event_folders(drive, root_id, cfg.crawl_limit)
+    event_folders = find_leaf_event_folders(drive, root_id, cfg.crawl_limit, cfg.event_start_date)
     logging.info("Total event folders found: %d", len(event_folders))
+    event_folders = filter_event_folders_by_start_date(event_folders, cfg.event_start_date)
+    logging.info("Event folders after date filter: %d", len(event_folders))
 
     imported_items: list[dict[str, Any]] = []
     total_added = 0
@@ -636,6 +733,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--state-file", help="Path to state JSON file")
     parser.add_argument("--timezone", help="Timezone label")
     parser.add_argument("--resize-percent", type=int, help="Resize percentage (1..100)")
+    parser.add_argument(
+        "--event-start-date",
+        help="Only import event folders dated on/after this date (default: 2026-05-09)",
+    )
     parser.add_argument("--email-to", help="Comma-separated recipients")
     parser.add_argument("--dry-run", action="store_true", help="Do not write/import or send emails")
     return parser.parse_args(argv)
