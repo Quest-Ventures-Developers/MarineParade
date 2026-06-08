@@ -1,7 +1,7 @@
 {
-  "imported_events": 118,
-  "total_photos": 14193,
+  "imported_events": 8,
+  "total_photos": 1213,
   "failures": 0,
-  "dry_run": true,
-  "timestamp": "2026-05-20T10:41:09"
+  "dry_run": false,
+  "timestamp": "2026-06-08T07:28:21"
 }
